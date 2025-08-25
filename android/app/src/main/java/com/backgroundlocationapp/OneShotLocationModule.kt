@@ -1,48 +1,39 @@
 package com.backgroundlocationapp
 
 import android.annotation.SuppressLint
+import android.content.Intent
 import android.location.Location
+import android.os.Build
 import com.facebook.react.bridge.*
-import com.google.android.gms.location.*
+import com.google.android.gms.location.LocationServices
+import com.google.android.gms.tasks.CancellationTokenSource
 
 class OneShotLocationModule(reactContext: ReactApplicationContext) :
     ReactContextBaseJavaModule(reactContext) {
 
-    override fun getName(): String {
-        return "OneShotLocation"
-    }
+    override fun getName(): String = "OneShotLocation"
 
+    // ✅ One-shot location
     @SuppressLint("MissingPermission")
     @ReactMethod
     fun getCurrentLocation(promise: Promise) {
-        val fusedLocationClient = LocationServices.getFusedLocationProviderClient(reactApplicationContext)
+        val fusedLocationClient =
+            LocationServices.getFusedLocationProviderClient(reactApplicationContext)
 
-        // ✅ Try last known location first
-        fusedLocationClient.lastLocation
+        val cancellationTokenSource = CancellationTokenSource()
+
+        fusedLocationClient.getCurrentLocation(
+            com.google.android.gms.location.Priority.PRIORITY_HIGH_ACCURACY,
+            cancellationTokenSource.token
+        )
             .addOnSuccessListener { location: Location? ->
                 if (location != null) {
-                    promise.resolve(toWritableMap(location))
+                    val map = Arguments.createMap()
+                    map.putDouble("latitude", location.latitude)
+                    map.putDouble("longitude", location.longitude)
+                    promise.resolve(map)
                 } else {
-                    // ✅ Request a fresh location update if lastLocation is null
-                    val request = LocationRequest.Builder(
-                        Priority.PRIORITY_HIGH_ACCURACY, 1000L
-                    ).setMaxUpdates(1).build()
-
-                    fusedLocationClient.requestLocationUpdates(
-                        request,
-                        object : LocationCallback() {
-                            override fun onLocationResult(result: LocationResult) {
-                                fusedLocationClient.removeLocationUpdates(this)
-                                val loc = result.lastLocation
-                                if (loc != null) {
-                                    promise.resolve(toWritableMap(loc))
-                                } else {
-                                    promise.reject("LOCATION_ERROR", "Unable to fetch location")
-                                }
-                            }
-                        },
-                        null
-                    )
+                    promise.reject("LOCATION_ERROR", "Unable to fetch location")
                 }
             }
             .addOnFailureListener { e ->
@@ -50,10 +41,15 @@ class OneShotLocationModule(reactContext: ReactApplicationContext) :
             }
     }
 
-    private fun toWritableMap(location: Location): WritableMap {
-        val map = Arguments.createMap()
-        map.putDouble("latitude", location.latitude)
-        map.putDouble("longitude", location.longitude)
-        return map
+    // ✅ Start background location service
+    @ReactMethod
+    fun startBackgroundLocation() {
+        val context = reactApplicationContext
+        val serviceIntent = Intent(context, LocationService::class.java)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            context.startForegroundService(serviceIntent)
+        } else {
+            context.startService(serviceIntent)
+        }
     }
 }

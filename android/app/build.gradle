@@ -45,6 +45,7 @@ dependencies {
     implementation("com.facebook.react:react-android")
     implementation("org.webkit:android-jsc:+") // 👈 JSC engine
     implementation 'com.google.android.gms:play-services-location:21.3.0'
+    
 }
 
 apply from: file("../../node_modules/@react-native-community/cli-platform-android/native_modules.gradle")
