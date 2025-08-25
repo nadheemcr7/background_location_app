@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, {useState, useEffect} from 'react';
 import {
   View,
   Text,
@@ -7,103 +7,134 @@ import {
   Platform,
   StyleSheet,
   Alert,
-} from "react-native";
-import { NativeModules } from "react-native";
+  DeviceEventEmitter,
+  ScrollView,
+} from 'react-native';
+import {NativeModules} from 'react-native';
+import SQLite from 'react-native-sqlite-storage';
 
-const { OneShotLocation } = NativeModules;
+const {BackgroundLocationModule} = NativeModules;
 
 const App = () => {
-  const [location, setLocation] = useState<{ lat: number; lng: number } | null>(
-    null
+  const [location, setLocation] = useState<{lat: number; lng: number} | null>(
+    null,
   );
-  const [error, setError] = useState<string | null>(null);
   const [isTracking, setIsTracking] = useState(false);
+  const [savedLocations, setSavedLocations] = useState<
+    {lat: number; lng: number}[]
+  >([]);
 
-  // ✅ Request location + background permissions
+  const db = SQLite.openDatabase(
+    {name: 'locations.db', location: 'default'},
+    () => console.log('📂 DB Opened'),
+    e => console.log('❌ DB Error', e),
+  );
+
+  // Create table once
+  useEffect(() => {
+    db.transaction(tx => {
+      tx.executeSql(
+        `CREATE TABLE IF NOT EXISTS locations (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          latitude REAL,
+          longitude REAL,
+          timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+        )`,
+        [],
+        () => console.log('✅ Table ready'),
+        (_, err) => {
+          console.log('❌ Table creation error', err);
+          return false;
+        },
+      );
+    });
+  }, []);
+
+  // Listen for native location updates
+  useEffect(() => {
+    const sub = DeviceEventEmitter.addListener('LocationUpdate', data => {
+      try {
+        const loc = JSON.parse(data);
+        setLocation({lat: loc.latitude, lng: loc.longitude});
+
+        // Save location in DB
+        db.transaction(tx => {
+          tx.executeSql(
+            'INSERT INTO locations (latitude, longitude) VALUES (?, ?)',
+            [loc.latitude, loc.longitude],
+            () => console.log('✅ Location saved:', loc),
+            (_, error) => {
+              console.log('❌ Insert error:', error);
+              return false;
+            },
+          );
+        });
+
+        fetchLocations(); // refresh list
+      } catch (e) {
+        console.log('Invalid data:', data);
+      }
+    });
+
+    return () => sub.remove();
+  }, []);
+
+  const fetchLocations = () => {
+    db.transaction(tx => {
+      tx.executeSql(
+        'SELECT latitude, longitude FROM locations ORDER BY id DESC LIMIT 5',
+        [],
+        (_, results) => {
+          const rows = results.rows;
+          let arr: {lat: number; lng: number}[] = [];
+          for (let i = 0; i < rows.length; i++) {
+            arr.push({lat: rows.item(i).latitude, lng: rows.item(i).longitude});
+          }
+          setSavedLocations(arr);
+        },
+      );
+    });
+  };
+
   const requestLocationPermission = async (): Promise<boolean> => {
-    if (Platform.OS === "android") {
+    if (Platform.OS === 'android') {
       try {
         const granted = await PermissionsAndroid.requestMultiple([
           PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION,
           PermissionsAndroid.PERMISSIONS.ACCESS_COARSE_LOCATION,
-          PermissionsAndroid.PERMISSIONS.ACCESS_BACKGROUND_LOCATION, // Needed for Android 10+
+          PermissionsAndroid.PERMISSIONS.ACCESS_BACKGROUND_LOCATION,
         ]);
-
-        const fineGranted =
-          granted["android.permission.ACCESS_FINE_LOCATION"] ===
-          PermissionsAndroid.RESULTS.GRANTED;
-        const coarseGranted =
-          granted["android.permission.ACCESS_COARSE_LOCATION"] ===
-          PermissionsAndroid.RESULTS.GRANTED;
-        const bgGranted =
-          granted["android.permission.ACCESS_BACKGROUND_LOCATION"] ===
-          PermissionsAndroid.RESULTS.GRANTED;
-
-        return fineGranted || coarseGranted || bgGranted;
+        return Object.values(granted).every(
+          res => res === PermissionsAndroid.RESULTS.GRANTED,
+        );
       } catch (err) {
-        console.warn("Permission error:", err);
+        console.warn('Permission error:', err);
         return false;
       }
     }
-    return true; // iOS not needed here
+    return true;
   };
 
-  // 📍 Get single location
-  const getLocation = async () => {
-    const hasPermission = await requestLocationPermission();
-    if (!hasPermission) {
-      setError("Permission denied");
-      return;
-    }
-
-    try {
-      const loc = await OneShotLocation.getCurrentLocation();
-      setLocation({
-        lat: loc.latitude,
-        lng: loc.longitude,
-      });
-      setError(null);
-    } catch (err: any) {
-      setError(err.message || "Failed to get location");
-    }
-  };
-
-  // 🚀 Start background tracking
   const startBackground = async () => {
     const hasPermission = await requestLocationPermission();
     if (!hasPermission) {
       Alert.alert(
-        "Permission Required",
-        "Background location permission is required to track your location even when the app is closed."
+        'Permission Required',
+        'Background location permission required.',
       );
       return;
     }
-
-    try {
-      OneShotLocation.startBackgroundLocation();
-      setIsTracking(true);
-      setError(null);
-    } catch (err: any) {
-      setError(err.message || "Failed to start background tracking");
-    }
+    BackgroundLocationModule.startService();
+    setIsTracking(true);
   };
 
-  // ⏹ Stop background tracking
   const stopBackground = async () => {
-    try {
-      OneShotLocation.stopBackgroundLocation();
-      setIsTracking(false);
-    } catch (err: any) {
-      setError(err.message || "Failed to stop background tracking");
-    }
+    BackgroundLocationModule.stopService();
+    setIsTracking(false);
   };
 
   return (
     <View style={styles.container}>
-      <Button title="📍 Get Current Location" onPress={getLocation} />
-
-      <View style={{ height: 20 }} />
-
       {!isTracking ? (
         <Button
           title="▶️ Start Background Tracking"
@@ -120,16 +151,18 @@ const App = () => {
 
       {location && (
         <Text style={styles.text}>
-          Latitude: {location.lat} {"\n"}
-          Longitude: {location.lng}
+          Current → Lat: {location.lat}, Lng: {location.lng}
         </Text>
       )}
 
-      {isTracking && (
-        <Text style={styles.tracking}>Tracking in background...</Text>
-      )}
-
-      {error && <Text style={styles.error}>⚠️ {error}</Text>}
+      <Text style={styles.heading}>📍 Last 5 Saved Locations</Text>
+      <ScrollView style={{marginTop: 10}}>
+        {savedLocations.map((loc, i) => (
+          <Text key={i} style={styles.text}>
+            {i + 1}. Lat: {loc.lat}, Lng: {loc.lng}
+          </Text>
+        ))}
+      </ScrollView>
     </View>
   );
 };
@@ -137,29 +170,7 @@ const App = () => {
 export default App;
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    justifyContent: "center",
-    alignItems: "center",
-    backgroundColor: "#fff",
-    padding: 20,
-  },
-  text: {
-    marginTop: 20,
-    fontSize: 16,
-    color: "#333",
-    textAlign: "center",
-  },
-  tracking: {
-    marginTop: 20,
-    fontSize: 16,
-    color: "green",
-    fontWeight: "bold",
-  },
-  error: {
-    marginTop: 20,
-    fontSize: 14,
-    color: "red",
-    textAlign: "center",
-  },
+  container: {flex: 1, justifyContent: 'center', alignItems: 'center', padding: 20},
+  text: {marginTop: 10, fontSize: 16},
+  heading: {marginTop: 20, fontSize: 18, fontWeight: 'bold'},
 });
