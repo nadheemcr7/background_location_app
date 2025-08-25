@@ -7,26 +7,32 @@ import android.app.Service
 import android.content.Intent
 import android.os.Build
 import android.os.IBinder
-import androidx.core.app.NotificationCompat
 import android.content.pm.ServiceInfo
+import androidx.core.app.NotificationCompat
 import com.google.android.gms.location.*
+import com.facebook.react.ReactApplication
+import com.facebook.react.bridge.ReactContext
+import com.facebook.react.modules.core.DeviceEventManagerModule
+import org.json.JSONObject
 
 class LocationService : Service() {
 
     private lateinit var fusedLocationClient: FusedLocationProviderClient
     private lateinit var locationRequest: LocationRequest
     private val CHANNEL_ID = "LocationChannel"
+    private var locationCallback: LocationCallback? = null
+    private lateinit var dbHelper: LocationDatabaseHelper
 
     override fun onCreate() {
         super.onCreate()
-
         fusedLocationClient = LocationServices.getFusedLocationProviderClient(this)
 
         locationRequest = LocationRequest.Builder(
             Priority.PRIORITY_HIGH_ACCURACY,
-            5000 // every 5 sec
-        ).setMinUpdateIntervalMillis(2000)
-            .build()
+            5000 // update every 5 sec
+        ).setMinUpdateIntervalMillis(2000).build()
+
+        dbHelper = LocationDatabaseHelper(this)
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -53,7 +59,6 @@ class LocationService : Service() {
             .build()
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            // 👇 Required for Android 10+
             startForeground(1, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION)
         } else {
             startForeground(1, notification)
@@ -61,21 +66,36 @@ class LocationService : Service() {
     }
 
     private fun startLocationUpdates() {
+        locationCallback = object : LocationCallback() {
+            override fun onLocationResult(locationResult: LocationResult) {
+                for (location in locationResult.locations) {
+                    val data = JSONObject()
+                    data.put("latitude", location.latitude)
+                    data.put("longitude", location.longitude)
+
+                    // ✅ Save into SQLite
+                    dbHelper.insertLocation(location.latitude, location.longitude)
+
+                    // ✅ Send to React Native
+                    val app = application as ReactApplication
+                    val context: ReactContext? =
+                        app.reactNativeHost.reactInstanceManager.currentReactContext
+
+                    context?.getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter::class.java)
+                        ?.emit("LocationUpdate", data.toString())
+
+                    android.util.Log.d(
+                        "LocationService",
+                        "Lat: ${location.latitude}, Lng: ${location.longitude}"
+                    )
+                }
+            }
+        }
+
         try {
             fusedLocationClient.requestLocationUpdates(
                 locationRequest,
-                object : LocationCallback() {
-                    override fun onLocationResult(locationResult: LocationResult) {
-                        for (location in locationResult.locations) {
-                            // 🔥 You can send this location to JS via a native module
-                            // or save it to a local DB / API
-                            android.util.Log.d(
-                                "LocationService",
-                                "Lat: ${location.latitude}, Lng: ${location.longitude}"
-                            )
-                        }
-                    }
-                },
+                locationCallback as LocationCallback,
                 mainLooper
             )
         } catch (e: SecurityException) {
@@ -83,12 +103,12 @@ class LocationService : Service() {
         }
     }
 
-    override fun onBind(intent: Intent?): IBinder? {
-        return null
-    }
-
     override fun onDestroy() {
         super.onDestroy()
-        fusedLocationClient.removeLocationUpdates(object : LocationCallback() {})
+        locationCallback?.let {
+            fusedLocationClient.removeLocationUpdates(it)
+        }
     }
+
+    override fun onBind(intent: Intent?): IBinder? = null
 }

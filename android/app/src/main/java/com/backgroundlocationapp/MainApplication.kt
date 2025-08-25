@@ -16,10 +16,13 @@ class MainApplication : Application(), ReactApplication {
         }
 
         override fun getPackages(): List<ReactPackage> {
-          return PackageList(this).packages.apply {
-            // ✅ Register our custom native module
-            add(OneShotLocationPackage())
-          }
+          // Get default packages from RN
+          val packages = PackageList(this).packages.toMutableList()
+
+          // ✅ Replace old OneShotLocationPackage with our new BackgroundLocationPackage
+          packages.add(BackgroundLocationPackage())
+
+          return packages
         }
 
         override fun getJSMainModuleName(): String {
