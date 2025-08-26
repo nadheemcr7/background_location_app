@@ -27,10 +27,14 @@ class LocationService : Service() {
         super.onCreate()
         fusedLocationClient = LocationServices.getFusedLocationProviderClient(this)
 
+        // ✅ 10 second interval + 0m displacement
         locationRequest = LocationRequest.Builder(
             Priority.PRIORITY_HIGH_ACCURACY,
-            5000 // update every 5 sec
-        ).setMinUpdateIntervalMillis(2000).build()
+            10_000L // every 10 sec
+        )
+            .setMinUpdateIntervalMillis(10_000L)
+            .setMinUpdateDistanceMeters(0f) // no minimum distance
+            .build()
 
         dbHelper = LocationDatabaseHelper(this)
     }
@@ -38,7 +42,7 @@ class LocationService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         startForegroundService()
         startLocationUpdates()
-        return START_STICKY
+        return START_NOT_STICKY   // ✅ do not auto-restart after stopService()
     }
 
     private fun startForegroundService() {
@@ -54,7 +58,7 @@ class LocationService : Service() {
 
         val notification: Notification = NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle("Background Location Running")
-            .setContentText("Your location is being tracked")
+            .setContentText("Tracking every 10 sec")
             .setSmallIcon(R.mipmap.ic_launcher)
             .build()
 
@@ -73,21 +77,16 @@ class LocationService : Service() {
                     data.put("latitude", location.latitude)
                     data.put("longitude", location.longitude)
 
-                    // ✅ Save into SQLite
+                    // ✅ Save in SQLite
                     dbHelper.insertLocation(location.latitude, location.longitude)
 
-                    // ✅ Send to React Native
+                    // ✅ Send to React Native JS (if app is alive)
                     val app = application as ReactApplication
                     val context: ReactContext? =
                         app.reactNativeHost.reactInstanceManager.currentReactContext
 
                     context?.getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter::class.java)
                         ?.emit("LocationUpdate", data.toString())
-
-                    android.util.Log.d(
-                        "LocationService",
-                        "Lat: ${location.latitude}, Lng: ${location.longitude}"
-                    )
                 }
             }
         }
@@ -108,6 +107,8 @@ class LocationService : Service() {
         locationCallback?.let {
             fusedLocationClient.removeLocationUpdates(it)
         }
+        stopForeground(true) // ✅ remove notification
+        stopSelf()           // ✅ ensure service is killed
     }
 
     override fun onBind(intent: Intent?): IBinder? = null

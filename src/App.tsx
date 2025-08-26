@@ -52,30 +52,24 @@ const App = () => {
 
   // Listen for native location updates
   useEffect(() => {
-    const sub = DeviceEventEmitter.addListener('LocationUpdate', data => {
-      try {
-        const loc = JSON.parse(data);
-        setLocation({lat: loc.latitude, lng: loc.longitude});
-
-        // Save location in DB
-        db.transaction(tx => {
-          tx.executeSql(
-            'INSERT INTO locations (latitude, longitude) VALUES (?, ?)',
-            [loc.latitude, loc.longitude],
-            () => console.log('✅ Location saved:', loc),
-            (_, error) => {
-              console.log('❌ Insert error:', error);
-              return false;
-            },
-          );
-        });
-
-        fetchLocations(); // refresh list
-      } catch (e) {
-        console.log('Invalid data:', data);
-      }
+    const sub = DeviceEventEmitter.addListener('LocationUpdate', loc => {
+      setLocation({lat: loc.latitude, lng: loc.longitude});
+  
+      db.transaction(tx => {
+        tx.executeSql(
+          'INSERT INTO locations (latitude, longitude) VALUES (?, ?)',
+          [loc.latitude, loc.longitude],
+          () => console.log('✅ Location saved:', loc),
+          (_, error) => {
+            console.log('❌ Insert error:', error);
+            return false;
+          },
+        );
+      });
+  
+      fetchLocations();
     });
-
+  
     return () => sub.remove();
   }, []);
 

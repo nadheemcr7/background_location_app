@@ -1,9 +1,9 @@
 package com.backgroundlocationapp
 
+import android.content.ContentValues
 import android.content.Context
 import android.database.sqlite.SQLiteDatabase
 import android.database.sqlite.SQLiteOpenHelper
-import android.content.ContentValues
 
 class LocationDatabaseHelper(context: Context) :
     SQLiteOpenHelper(context, DATABASE_NAME, null, DATABASE_VERSION) {
@@ -13,20 +13,20 @@ class LocationDatabaseHelper(context: Context) :
         private const val DATABASE_VERSION = 1
         private const val TABLE_NAME = "locations"
         private const val COLUMN_ID = "id"
-        private const val COLUMN_LAT = "latitude"
-        private const val COLUMN_LNG = "longitude"
-        private const val COLUMN_TIME = "timestamp"
+        private const val COLUMN_LATITUDE = "latitude"
+        private const val COLUMN_LONGITUDE = "longitude"
+        private const val COLUMN_TIMESTAMP = "timestamp"
     }
 
     override fun onCreate(db: SQLiteDatabase) {
         val createTable = """
             CREATE TABLE $TABLE_NAME (
                 $COLUMN_ID INTEGER PRIMARY KEY AUTOINCREMENT,
-                $COLUMN_LAT REAL,
-                $COLUMN_LNG REAL,
-                $COLUMN_TIME TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                $COLUMN_LATITUDE REAL,
+                $COLUMN_LONGITUDE REAL,
+                $COLUMN_TIMESTAMP DATETIME DEFAULT CURRENT_TIMESTAMP
             )
-        """.trimIndent()
+        """
         db.execSQL(createTable)
     }
 
@@ -35,29 +35,42 @@ class LocationDatabaseHelper(context: Context) :
         onCreate(db)
     }
 
-    fun insertLocation(lat: Double, lng: Double) {
+    fun insertLocation(latitude: Double, longitude: Double) {
         val db = writableDatabase
         val values = ContentValues().apply {
-            put(COLUMN_LAT, lat)
-            put(COLUMN_LNG, lng)
+            put(COLUMN_LATITUDE, latitude)
+            put(COLUMN_LONGITUDE, longitude)
         }
         db.insert(TABLE_NAME, null, values)
         db.close()
     }
 
-    fun getAllLocations(): List<Pair<Double, Double>> {
-        val list = mutableListOf<Pair<Double, Double>>()
+    // ✅ New: Fetch all saved locations
+    fun getAllLocations(): List<Map<String, Any>> {
+        val locations = mutableListOf<Map<String, Any>>()
         val db = readableDatabase
-        val cursor = db.rawQuery("SELECT $COLUMN_LAT, $COLUMN_LNG FROM $TABLE_NAME", null)
+        val cursor = db.rawQuery("SELECT * FROM $TABLE_NAME ORDER BY $COLUMN_TIMESTAMP DESC", null)
+
         if (cursor.moveToFirst()) {
             do {
-                val lat = cursor.getDouble(0)
-                val lng = cursor.getDouble(1)
-                list.add(Pair(lat, lng))
+                val id = cursor.getInt(cursor.getColumnIndexOrThrow(COLUMN_ID))
+                val lat = cursor.getDouble(cursor.getColumnIndexOrThrow(COLUMN_LATITUDE))
+                val lng = cursor.getDouble(cursor.getColumnIndexOrThrow(COLUMN_LONGITUDE))
+                val ts = cursor.getString(cursor.getColumnIndexOrThrow(COLUMN_TIMESTAMP))
+
+                locations.add(
+                    mapOf(
+                        "id" to id,
+                        "latitude" to lat,
+                        "longitude" to lng,
+                        "timestamp" to ts
+                    )
+                )
             } while (cursor.moveToNext())
         }
+
         cursor.close()
         db.close()
-        return list
+        return locations
     }
 }

@@ -5,22 +5,27 @@ plugins {
 }
 
 project.ext.react = [
-    enableHermes: false // 👈 disable Hermes and use JSC
+    enableHermes: false // 👈 using JSC instead of Hermes
 ]
 
 android {
+    namespace "com.backgroundlocationapp"
+
     ndkVersion rootProject.ext.ndkVersion
     buildToolsVersion rootProject.ext.buildToolsVersion
     compileSdk rootProject.ext.compileSdkVersion
 
-    namespace "com.backgroundlocationapp"
     defaultConfig {
         applicationId "com.backgroundlocationapp"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
         versionCode 1
         versionName "1.0"
+
+        // ✅ Needed for foreground services on Android 12+
+        multiDexEnabled true
     }
+
     signingConfigs {
         debug {
             storeFile file("debug.keystore")
@@ -28,14 +33,23 @@ android {
             keyAlias "androiddebugkey"
             keyPassword "android"
         }
+        // 👉 Release signing config (replace with your keystore if you have one)
+        release {
+            storeFile file("release.keystore")
+            storePassword "yourPassword"
+            keyAlias "yourAlias"
+            keyPassword "yourPassword"
+        }
     }
+
     buildTypes {
         debug {
             signingConfig signingConfigs.debug
         }
         release {
-            signingConfig signingConfigs.debug
-            minifyEnabled false
+            signingConfig signingConfigs.release // 👈 use real keystore for signed AAB/APK
+            minifyEnabled false // disable shrinking for now
+            shrinkResources false
             proguardFiles getDefaultProguardFile("proguard-android.txt"), "proguard-rules.pro"
         }
     }
@@ -43,9 +57,10 @@ android {
 
 dependencies {
     implementation("com.facebook.react:react-android")
-    implementation("org.webkit:android-jsc:+") // 👈 JSC engine
-    implementation 'com.google.android.gms:play-services-location:21.3.0'
-    
+    implementation("org.webkit:android-jsc:+") // JSC engine
+    implementation("com.google.android.gms:play-services-location:21.3.0")
+
+    implementation("androidx.multidex:multidex:2.0.1")
 }
 
 apply from: file("../../node_modules/@react-native-community/cli-platform-android/native_modules.gradle")
