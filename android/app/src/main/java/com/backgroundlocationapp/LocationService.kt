@@ -4,18 +4,20 @@ import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.Service
+import android.content.pm.PackageManager
 import android.content.Intent
 import android.os.Build
 import android.os.IBinder
 import android.content.pm.ServiceInfo
 import androidx.core.app.NotificationCompat
+import androidx.core.content.ContextCompat
 import com.google.android.gms.location.*
 import com.facebook.react.ReactApplication
 import com.facebook.react.bridge.ReactContext
 import com.facebook.react.bridge.Arguments
 import com.facebook.react.bridge.WritableMap
 import com.facebook.react.modules.core.DeviceEventManagerModule
-import com.backgroundlocationapp.R   // ✅ make sure this is imported
+import com.backgroundlocationapp.R
 
 class LocationService : Service() {
 
@@ -29,7 +31,10 @@ class LocationService : Service() {
         super.onCreate()
         fusedLocationClient = LocationServices.getFusedLocationProviderClient(this)
 
-        // ✅ High accuracy, every 10 sec
+        // Start foreground immediately so OS doesn't kill us (Android 12+ policy)
+        startForegroundServiceSafely()
+
+        // High accuracy, every 10 sec
         locationRequest = LocationRequest.Builder(
             Priority.PRIORITY_HIGH_ACCURACY,
             10_000L
@@ -42,12 +47,11 @@ class LocationService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        startForegroundService()
         startLocationUpdates()
         return START_STICKY
     }
 
-    private fun startForegroundService() {
+    private fun startForegroundServiceSafely() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val channel = NotificationChannel(
                 CHANNEL_ID,
@@ -55,7 +59,7 @@ class LocationService : Service() {
                 NotificationManager.IMPORTANCE_LOW
             )
             val manager = getSystemService(NotificationManager::class.java)
-            manager?.createNotificationChannel(channel) // ✅ null safe
+            manager?.createNotificationChannel(channel)
         }
 
         val notification: Notification = NotificationCompat.Builder(this, CHANNEL_ID)
@@ -64,9 +68,31 @@ class LocationService : Service() {
             .setSmallIcon(R.mipmap.ic_launcher)
             .build()
 
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            startForeground(1, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION)
-        } else {
+        val hasFine = ContextCompat.checkSelfPermission(
+            this, android.Manifest.permission.ACCESS_FINE_LOCATION
+        ) == PackageManager.PERMISSION_GRANTED
+        val hasCoarse = ContextCompat.checkSelfPermission(
+            this, android.Manifest.permission.ACCESS_COARSE_LOCATION
+        ) == PackageManager.PERMISSION_GRANTED
+        val hasAnyLocation = hasFine || hasCoarse
+
+        val hasFgsLocation =
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                // Normal (non-runtime) permission; GRANTED if declared in manifest
+                ContextCompat.checkSelfPermission(
+                    this, android.Manifest.permission.FOREGROUND_SERVICE_LOCATION
+                ) == PackageManager.PERMISSION_GRANTED
+            } else true
+
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && hasFgsLocation && hasAnyLocation) {
+                startForeground(1, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION)
+            } else {
+                // Fallback without type to avoid SecurityException
+                startForeground(1, notification)
+            }
+        } catch (_: SecurityException) {
+            // Final safety net: still show a foreground notification (no type)
             startForeground(1, notification)
         }
     }
@@ -75,10 +101,10 @@ class LocationService : Service() {
         locationCallback = object : LocationCallback() {
             override fun onLocationResult(locationResult: LocationResult) {
                 for (location in locationResult.locations) {
-                    // ✅ Save to SQLite
+                    // Save to SQLite
                     dbHelper.insertLocation(location.latitude, location.longitude)
 
-                    // ✅ Send WritableMap (RN compatible)
+                    // Emit to RN
                     val app = application as ReactApplication
                     val context: ReactContext? =
                         app.reactNativeHost.reactInstanceManager.currentReactContext
@@ -99,7 +125,7 @@ class LocationService : Service() {
         try {
             fusedLocationClient.requestLocationUpdates(
                 locationRequest,
-                locationCallback!!,   // ✅ safe (we assign just above)
+                locationCallback!!,
                 mainLooper
             )
         } catch (e: SecurityException) {
@@ -108,9 +134,7 @@ class LocationService : Service() {
     }
 
     override fun onDestroy() {
-        locationCallback?.let {
-            fusedLocationClient.removeLocationUpdates(it)
-        }
+        locationCallback?.let { fusedLocationClient.removeLocationUpdates(it) }
         locationCallback = null
         stopForeground(true)
         stopSelf()
