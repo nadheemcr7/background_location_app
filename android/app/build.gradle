@@ -4,8 +4,13 @@ plugins {
     id("com.facebook.react")
 }
 
+// ✅ React Native config
 project.ext.react = [
-    enableHermes: false // 👈 using JSC instead of Hermes
+    enableHermes: false, // 👈 using JSC instead of Hermes
+    entryFile   : "index.js",
+    nodeExecutableAndArgs: [
+        project.hasProperty("NODE_BINARY") ? project.getProperty("NODE_BINARY") : "node"
+    ]
 ]
 
 android {
@@ -22,8 +27,7 @@ android {
         versionCode 1
         versionName "1.0"
 
-        // ✅ Needed for foreground services on Android 12+
-        multiDexEnabled true
+        multiDexEnabled true // ✅ Needed for foreground services on Android 12+
     }
 
     signingConfigs {
@@ -33,22 +37,33 @@ android {
             keyAlias "androiddebugkey"
             keyPassword "android"
         }
-        // 👉 Release signing config (replace with your keystore if you have one)
         release {
-            storeFile file("release.keystore")
-            storePassword "yourPassword"
-            keyAlias "yourAlias"
-            keyPassword "yourPassword"
+            storeFile file("my-new-release-key.keystore")
+            storePassword "@Nadheem1"
+            keyAlias "my-key-alias"
+            keyPassword "@Nadheem1"
         }
     }
+
+buildTypes {
+    debug {
+        signingConfig signingConfigs.debug
+    }
+    release {
+        signingConfig signingConfigs.release
+        minifyEnabled false
+        shrinkResources false
+        proguardFiles getDefaultProguardFile("proguard-android.txt"), "proguard-rules.pro"
+    }
+}
 
     buildTypes {
         debug {
             signingConfig signingConfigs.debug
         }
         release {
-            signingConfig signingConfigs.release // 👈 use real keystore for signed AAB/APK
-            minifyEnabled false // disable shrinking for now
+            signingConfig signingConfigs.release // ✅ Enable release signing
+            minifyEnabled false
             shrinkResources false
             proguardFiles getDefaultProguardFile("proguard-android.txt"), "proguard-rules.pro"
         }
@@ -59,7 +74,6 @@ dependencies {
     implementation("com.facebook.react:react-android")
     implementation("org.webkit:android-jsc:+") // JSC engine
     implementation("com.google.android.gms:play-services-location:21.3.0")
-
     implementation("androidx.multidex:multidex:2.0.1")
 }
 

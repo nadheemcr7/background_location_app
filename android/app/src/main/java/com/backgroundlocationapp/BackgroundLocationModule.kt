@@ -20,7 +20,7 @@ class BackgroundLocationModule(private val reactContext: ReactApplicationContext
 
     @ReactMethod
     fun startService() {
-        val intent = Intent(reactContext, BackgroundLocationService::class.java)
+        val intent = Intent(reactContext, LocationService::class.java) // ✅ fixed reference
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             reactContext.startForegroundService(intent)
         } else {
@@ -42,7 +42,7 @@ class BackgroundLocationModule(private val reactContext: ReactApplicationContext
 
     @ReactMethod
     fun stopService() {
-        val intent = Intent(reactContext, LocationService::class.java)
+        val intent = Intent(reactContext, LocationService::class.java) // ✅ consistent reference
         reactContext.stopService(intent)
     }
 

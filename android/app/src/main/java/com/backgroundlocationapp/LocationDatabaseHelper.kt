@@ -10,7 +10,7 @@ class LocationDatabaseHelper(context: Context) :
 
     companion object {
         private const val DATABASE_NAME = "locations.db"
-        private const val DATABASE_VERSION = 1
+        private const val DATABASE_VERSION = 2 // ⬅️ bump version (important for upgrades)
         private const val TABLE_NAME = "locations"
         private const val COLUMN_ID = "id"
         private const val COLUMN_LATITUDE = "latitude"
@@ -20,7 +20,7 @@ class LocationDatabaseHelper(context: Context) :
 
     override fun onCreate(db: SQLiteDatabase) {
         val createTable = """
-            CREATE TABLE $TABLE_NAME (
+            CREATE TABLE IF NOT EXISTS $TABLE_NAME (
                 $COLUMN_ID INTEGER PRIMARY KEY AUTOINCREMENT,
                 $COLUMN_LATITUDE REAL,
                 $COLUMN_LONGITUDE REAL,
@@ -31,6 +31,7 @@ class LocationDatabaseHelper(context: Context) :
     }
 
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
+        // 🔧 If schema changes in future, drop and recreate
         db.execSQL("DROP TABLE IF EXISTS $TABLE_NAME")
         onCreate(db)
     }
@@ -45,7 +46,6 @@ class LocationDatabaseHelper(context: Context) :
         db.close()
     }
 
-    // ✅ New: Fetch all saved locations
     fun getAllLocations(): List<Map<String, Any>> {
         val locations = mutableListOf<Map<String, Any>>()
         val db = readableDatabase

@@ -9,6 +9,7 @@ import {
   Alert,
   DeviceEventEmitter,
   ScrollView,
+  Linking,
 } from 'react-native';
 import {NativeModules} from 'react-native';
 import SQLite from 'react-native-sqlite-storage';
@@ -30,7 +31,7 @@ const App = () => {
     e => console.log('❌ DB Error', e),
   );
 
-  // Create table once
+  // 🔹 Create table once
   useEffect(() => {
     db.transaction(tx => {
       tx.executeSql(
@@ -50,11 +51,15 @@ const App = () => {
     });
   }, []);
 
-  // Listen for native location updates
+  // 🔹 Listen for native location updates
   useEffect(() => {
     const sub = DeviceEventEmitter.addListener('LocationUpdate', loc => {
+      console.log('📡 Location update received:', loc);
+
+      if (!loc?.latitude || !loc?.longitude) return;
+
       setLocation({lat: loc.latitude, lng: loc.longitude});
-  
+
       db.transaction(tx => {
         tx.executeSql(
           'INSERT INTO locations (latitude, longitude) VALUES (?, ?)',
@@ -66,10 +71,10 @@ const App = () => {
           },
         );
       });
-  
+
       fetchLocations();
     });
-  
+
     return () => sub.remove();
   }, []);
 
@@ -90,6 +95,7 @@ const App = () => {
     });
   };
 
+  // 🔹 Proper permission request
   const requestLocationPermission = async (): Promise<boolean> => {
     if (Platform.OS === 'android') {
       try {
@@ -98,9 +104,41 @@ const App = () => {
           PermissionsAndroid.PERMISSIONS.ACCESS_COARSE_LOCATION,
           PermissionsAndroid.PERMISSIONS.ACCESS_BACKGROUND_LOCATION,
         ]);
-        return Object.values(granted).every(
-          res => res === PermissionsAndroid.RESULTS.GRANTED,
-        );
+
+        const fine =
+          granted['android.permission.ACCESS_FINE_LOCATION'] ===
+          PermissionsAndroid.RESULTS.GRANTED;
+        const coarse =
+          granted['android.permission.ACCESS_COARSE_LOCATION'] ===
+          PermissionsAndroid.RESULTS.GRANTED;
+        const background =
+          granted['android.permission.ACCESS_BACKGROUND_LOCATION'] ===
+          PermissionsAndroid.RESULTS.GRANTED;
+
+        if (!fine && !coarse) {
+          Alert.alert(
+            'Permission Required',
+            'Location permission is required to track your position.',
+          );
+          return false;
+        }
+
+        if (Platform.Version >= 29 && !background) {
+          Alert.alert(
+            'Background Location Needed',
+            'Please allow "Allow all the time" for location in settings.',
+            [
+              {text: 'Cancel', style: 'cancel'},
+              {
+                text: 'Open Settings',
+                onPress: () => Linking.openSettings(),
+              },
+            ],
+          );
+          return false;
+        }
+
+        return true;
       } catch (err) {
         console.warn('Permission error:', err);
         return false;
@@ -109,22 +147,30 @@ const App = () => {
     return true;
   };
 
+  // 🔹 Start service safely
   const startBackground = async () => {
     const hasPermission = await requestLocationPermission();
-    if (!hasPermission) {
-      Alert.alert(
-        'Permission Required',
-        'Background location permission required.',
-      );
-      return;
+    if (!hasPermission) return;
+
+    try {
+      BackgroundLocationModule.startService();
+      setIsTracking(true);
+      console.log('🚀 Background service started');
+    } catch (e) {
+      console.log('❌ Failed to start service', e);
+      Alert.alert('Error', 'Failed to start background service.');
     }
-    BackgroundLocationModule.startService();
-    setIsTracking(true);
   };
 
-  const stopBackground = async () => {
-    BackgroundLocationModule.stopService();
-    setIsTracking(false);
+  // 🔹 Stop service safely
+  const stopBackground = () => {
+    try {
+      BackgroundLocationModule.stopService();
+      setIsTracking(false);
+      console.log('🛑 Background service stopped');
+    } catch (e) {
+      console.log('❌ Failed to stop service', e);
+    }
   };
 
   return (

@@ -98,7 +98,26 @@ To learn more about React Native, take a look at the following resources:
 
 
 
+npx react-native start --reset-cache
+ npx react-native run-android
+
 
 
 npx react-native run-android --deviceId adb-ZA222KZWFM-P8BveT._adb-tls-connect._tcp
+
+
+
+cd android
+./gradlew assembleRelease
+
+
+cd android
+./gradlew clean          
+cd ..
+
+
+
+adb logcat --pid=$(adb shell pidof -s com.backgroundlocationapp)
+
+
 

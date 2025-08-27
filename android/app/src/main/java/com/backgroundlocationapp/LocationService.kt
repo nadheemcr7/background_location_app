@@ -12,8 +12,10 @@ import androidx.core.app.NotificationCompat
 import com.google.android.gms.location.*
 import com.facebook.react.ReactApplication
 import com.facebook.react.bridge.ReactContext
+import com.facebook.react.bridge.Arguments
+import com.facebook.react.bridge.WritableMap
 import com.facebook.react.modules.core.DeviceEventManagerModule
-import org.json.JSONObject
+import com.backgroundlocationapp.R   // ✅ make sure this is imported
 
 class LocationService : Service() {
 
@@ -27,13 +29,13 @@ class LocationService : Service() {
         super.onCreate()
         fusedLocationClient = LocationServices.getFusedLocationProviderClient(this)
 
-        // ✅ 10 second interval + 0m displacement
+        // ✅ High accuracy, every 10 sec
         locationRequest = LocationRequest.Builder(
             Priority.PRIORITY_HIGH_ACCURACY,
-            10_000L // every 10 sec
+            10_000L
         )
             .setMinUpdateIntervalMillis(10_000L)
-            .setMinUpdateDistanceMeters(0f) // no minimum distance
+            .setMinUpdateDistanceMeters(0f)
             .build()
 
         dbHelper = LocationDatabaseHelper(this)
@@ -42,7 +44,7 @@ class LocationService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         startForegroundService()
         startLocationUpdates()
-        return START_NOT_STICKY   // ✅ do not auto-restart after stopService()
+        return START_STICKY
     }
 
     private fun startForegroundService() {
@@ -53,7 +55,7 @@ class LocationService : Service() {
                 NotificationManager.IMPORTANCE_LOW
             )
             val manager = getSystemService(NotificationManager::class.java)
-            manager.createNotificationChannel(channel)
+            manager?.createNotificationChannel(channel) // ✅ null safe
         }
 
         val notification: Notification = NotificationCompat.Builder(this, CHANNEL_ID)
@@ -73,20 +75,23 @@ class LocationService : Service() {
         locationCallback = object : LocationCallback() {
             override fun onLocationResult(locationResult: LocationResult) {
                 for (location in locationResult.locations) {
-                    val data = JSONObject()
-                    data.put("latitude", location.latitude)
-                    data.put("longitude", location.longitude)
-
-                    // ✅ Save in SQLite
+                    // ✅ Save to SQLite
                     dbHelper.insertLocation(location.latitude, location.longitude)
 
-                    // ✅ Send to React Native JS (if app is alive)
+                    // ✅ Send WritableMap (RN compatible)
                     val app = application as ReactApplication
                     val context: ReactContext? =
                         app.reactNativeHost.reactInstanceManager.currentReactContext
 
+                    val params: WritableMap = Arguments.createMap().apply {
+                        putDouble("latitude", location.latitude)
+                        putDouble("longitude", location.longitude)
+                        putDouble("accuracy", location.accuracy.toDouble())
+                        putDouble("timestamp", System.currentTimeMillis().toDouble())
+                    }
+
                     context?.getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter::class.java)
-                        ?.emit("LocationUpdate", data.toString())
+                        ?.emit("LocationUpdate", params)
                 }
             }
         }
@@ -94,7 +99,7 @@ class LocationService : Service() {
         try {
             fusedLocationClient.requestLocationUpdates(
                 locationRequest,
-                locationCallback as LocationCallback,
+                locationCallback!!,   // ✅ safe (we assign just above)
                 mainLooper
             )
         } catch (e: SecurityException) {
@@ -103,12 +108,13 @@ class LocationService : Service() {
     }
 
     override fun onDestroy() {
-        super.onDestroy()
         locationCallback?.let {
             fusedLocationClient.removeLocationUpdates(it)
         }
-        stopForeground(true) // ✅ remove notification
-        stopSelf()           // ✅ ensure service is killed
+        locationCallback = null
+        stopForeground(true)
+        stopSelf()
+        super.onDestroy()
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
