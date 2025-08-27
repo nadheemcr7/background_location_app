@@ -191,7 +191,7 @@ const App = () => {
 
       {location && (
         <Text style={styles.text}>
-          Current → Lat: {location.lat}, Lng: {location.lng}
+          Current → Lat: {location.lat ?? "—"}, Lng: {location.lng ?? "—"}
         </Text>
       )}
 
@@ -199,7 +199,7 @@ const App = () => {
       <ScrollView style={{marginTop: 10}}>
         {savedLocations.map((loc, i) => (
           <Text key={i} style={styles.text}>
-            {i + 1}. Lat: {loc.lat}, Lng: {loc.lng}
+            {i + 1}. Lat: {loc.lat ?? "—"}, Lng: {loc.lng ?? "—"}
           </Text>
         ))}
       </ScrollView>
