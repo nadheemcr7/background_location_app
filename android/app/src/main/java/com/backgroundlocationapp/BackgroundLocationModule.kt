@@ -20,14 +20,14 @@ class BackgroundLocationModule(private val reactContext: ReactApplicationContext
 
     @ReactMethod
     fun startService() {
-        val intent = Intent(reactContext, LocationService::class.java) // ✅ fixed reference
+        val intent = Intent(reactContext, LocationService::class.java)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             reactContext.startForegroundService(intent)
         } else {
             reactContext.startService(intent)
         }
 
-        // ✅ Request battery optimization ignore (needed for background tracking)
+        // Ask user to disable battery optimizations
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
             val pm = reactContext.getSystemService(android.content.Context.POWER_SERVICE) as PowerManager
             val pkg = reactContext.packageName
@@ -42,26 +42,31 @@ class BackgroundLocationModule(private val reactContext: ReactApplicationContext
 
     @ReactMethod
     fun stopService() {
-        val intent = Intent(reactContext, LocationService::class.java) // ✅ consistent reference
+        val intent = Intent(reactContext, LocationService::class.java)
         reactContext.stopService(intent)
     }
 
-    // ✅ Expose saved locations to React Native
+    // Expose saved locations to React Native
     @ReactMethod
     fun getSavedLocations(promise: Promise) {
-        val dbHelper = LocationDatabaseHelper(reactContext)
-        val list = dbHelper.getAllLocations()
-        val array = Arguments.createArray()
+        try {
+            val dbHelper = LocationDatabaseHelper(reactContext)
+            val list = dbHelper.getAllLocations()
+            val array = Arguments.createArray()
 
-        list.forEach {
-            val map = Arguments.createMap()
-            map.putInt("id", it["id"] as Int)
-            map.putDouble("latitude", it["latitude"] as Double)
-            map.putDouble("longitude", it["longitude"] as Double)
-            map.putString("timestamp", it["timestamp"] as String)
-            array.pushMap(map)
+            list.forEach { row ->
+                val map = Arguments.createMap()
+                map.putInt("id", row.id)
+                map.putDouble("latitude", row.latitude)
+                map.putDouble("longitude", row.longitude)
+                map.putDouble("timestamp", row.createdAtMs.toDouble())
+                map.putString("deviceId", row.deviceId)
+                array.pushMap(map)
+            }
+
+            promise.resolve(array)
+        } catch (e: Exception) {
+            promise.reject("DB_ERROR", e.message)
         }
-
-        promise.resolve(array)
     }
 }

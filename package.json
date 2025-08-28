@@ -14,11 +14,16 @@
   "dependencies": {
     "@react-native-async-storage/async-storage": "^2.2.0",
     "@react-native-community/netinfo": "^11.4.1",
-    "@supabase/supabase-js": "^2.55.0",
+    "@supabase/supabase-js": "2",
+    "cross-fetch": "^4.1.0",
     "react": "18.2.0",
     "react-native": "0.74.5",
+    "react-native-config": "^1.5.7",
+    "react-native-device-info": "^14.0.4",
+    "react-native-location-enabler": "^4.1.1",
     "react-native-permissions": "^5.4.2",
     "react-native-sqlite-storage": "^6.0.1",
+    "react-native-url-polyfill": "^2.0.0",
     "react-native-vector-icons": "^10.3.0",
     "react-native-webview": "^13.15.0"
   },

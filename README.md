@@ -130,3 +130,7 @@ keytool -genkey -v \
 
 
 
+To switch to 5 minutes / 50 meters later, change:
+
+private val CHECK_INTERVAL_MS = 5 * 60_000L
+private val MIN_MOVE_METERS = 50f

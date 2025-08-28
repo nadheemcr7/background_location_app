@@ -4,142 +4,185 @@ import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.Service
-import android.content.pm.PackageManager
+import android.content.Context
 import android.content.Intent
+import android.location.Location
 import android.os.Build
 import android.os.IBinder
-import android.content.pm.ServiceInfo
+import android.provider.Settings
 import androidx.core.app.NotificationCompat
-import androidx.core.content.ContextCompat
-import com.google.android.gms.location.*
-import com.facebook.react.ReactApplication
-import com.facebook.react.bridge.ReactContext
-import com.facebook.react.bridge.Arguments
-import com.facebook.react.bridge.WritableMap
-import com.facebook.react.modules.core.DeviceEventManagerModule
-import com.backgroundlocationapp.R
+import com.google.android.gms.location.FusedLocationProviderClient
+import com.google.android.gms.location.LocationServices
+import com.google.android.gms.location.Priority
+import kotlinx.coroutines.*
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
+import org.json.JSONArray
+import org.json.JSONObject
+import java.util.UUID
 
 class LocationService : Service() {
 
     private lateinit var fusedLocationClient: FusedLocationProviderClient
-    private lateinit var locationRequest: LocationRequest
-    private val CHANNEL_ID = "LocationChannel"
-    private var locationCallback: LocationCallback? = null
     private lateinit var dbHelper: LocationDatabaseHelper
+    private var trackingJob: Job? = null
+    private val client = OkHttpClient()
+
+    private val CHECK_INTERVAL_MS = 30_000L       // every 30 seconds
+    private val DISTANCE_THRESHOLD_METERS = 10.0  // 10 meters
+    private val SUPABASE_URL = "https://ezcivoiepeyrfaykqkfl.supabase.co"
+    private val SUPABASE_TABLE = "location_points"
+    private val SUPABASE_KEY =
+        "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImV6Y2l2b2llcGV5cmZheWtxa2ZsIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc0NDQ3MTA0MywiZXhwIjoyMDYwMDQ3MDQzfQ.bmMal1PS6dpGSfr2QNdJI5Waqehl5UwJRtLLMTzmx-0"
+
+    // Use a stable device ID instead of random UUID each boot
+    private val deviceId: String by lazy {
+        Settings.Secure.getString(contentResolver, Settings.Secure.ANDROID_ID)
+            ?: UUID.randomUUID().toString()
+    }
 
     override fun onCreate() {
         super.onCreate()
         fusedLocationClient = LocationServices.getFusedLocationProviderClient(this)
-
-        // Start foreground immediately so OS doesn't kill us (Android 12+ policy)
-        startForegroundServiceSafely()
-
-        // High accuracy, every 10 sec
-        locationRequest = LocationRequest.Builder(
-            Priority.PRIORITY_HIGH_ACCURACY,
-            10_000L
-        )
-            .setMinUpdateIntervalMillis(10_000L)
-            .setMinUpdateDistanceMeters(0f)
-            .build()
-
         dbHelper = LocationDatabaseHelper(this)
+        startForegroundService()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        startLocationUpdates()
+        startTrackingLoop()
         return START_STICKY
     }
 
-    private fun startForegroundServiceSafely() {
+    override fun onDestroy() {
+        super.onDestroy()
+        trackingJob?.cancel()
+    }
+
+    override fun onBind(intent: Intent?): IBinder? = null
+
+    private fun startForegroundService() {
+        val channelId = "location_tracking_channel"
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val channel = NotificationChannel(
-                CHANNEL_ID,
-                "Background Location",
-                NotificationManager.IMPORTANCE_LOW
+                channelId, "Location Tracking", NotificationManager.IMPORTANCE_LOW
             )
-            val manager = getSystemService(NotificationManager::class.java)
-            manager?.createNotificationChannel(channel)
+            val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+            manager.createNotificationChannel(channel)
         }
 
-        val notification: Notification = NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle("Background Location Running")
-            .setContentText("Tracking every 10 sec")
-            .setSmallIcon(R.mipmap.ic_launcher)
+        val notification: Notification = NotificationCompat.Builder(this, channelId)
+            .setContentTitle("Tracking Location")
+            .setContentText("Background location tracking active")
+            .setSmallIcon(android.R.drawable.ic_menu_mylocation)
             .build()
 
-        val hasFine = ContextCompat.checkSelfPermission(
-            this, android.Manifest.permission.ACCESS_FINE_LOCATION
-        ) == PackageManager.PERMISSION_GRANTED
-        val hasCoarse = ContextCompat.checkSelfPermission(
-            this, android.Manifest.permission.ACCESS_COARSE_LOCATION
-        ) == PackageManager.PERMISSION_GRANTED
-        val hasAnyLocation = hasFine || hasCoarse
+        startForeground(1, notification)
+    }
 
-        val hasFgsLocation =
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                // Normal (non-runtime) permission; GRANTED if declared in manifest
-                ContextCompat.checkSelfPermission(
-                    this, android.Manifest.permission.FOREGROUND_SERVICE_LOCATION
-                ) == PackageManager.PERMISSION_GRANTED
-            } else true
+    private fun startTrackingLoop() {
+        trackingJob = CoroutineScope(Dispatchers.IO).launch {
+            var lastSaved: LocationDatabaseHelper.LastLoc? = null
 
-        try {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && hasFgsLocation && hasAnyLocation) {
-                startForeground(1, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION)
-            } else {
-                // Fallback without type to avoid SecurityException
-                startForeground(1, notification)
+            while (isActive) {
+                val loc = getCurrentLocation()
+                if (loc != null) {
+                    if (lastSaved == null) {
+                        // First fix → always save
+                        dbHelper.insertLocation(
+                            loc.latitude,
+                            loc.longitude,
+                            System.currentTimeMillis(),
+                            deviceId
+                        )
+                        lastSaved = LocationDatabaseHelper.LastLoc(
+                            loc.latitude, loc.longitude, System.currentTimeMillis()
+                        )
+                    } else {
+                        val dist = distanceMeters(
+                            lastSaved.latitude,
+                            lastSaved.longitude,
+                            loc.latitude,
+                            loc.longitude
+                        )
+                        if (dist > DISTANCE_THRESHOLD_METERS) {
+                            dbHelper.insertLocation(
+                                loc.latitude,
+                                loc.longitude,
+                                System.currentTimeMillis(),
+                                deviceId
+                            )
+                            lastSaved = LocationDatabaseHelper.LastLoc(
+                                loc.latitude, loc.longitude, System.currentTimeMillis()
+                            )
+                        }
+                    }
+                    // Try sync if batch ready
+                    syncIfBatchReady()
+                }
+                delay(CHECK_INTERVAL_MS)
             }
-        } catch (_: SecurityException) {
-            // Final safety net: still show a foreground notification (no type)
-            startForeground(1, notification)
         }
     }
 
-    private fun startLocationUpdates() {
-        locationCallback = object : LocationCallback() {
-            override fun onLocationResult(locationResult: LocationResult) {
-                for (location in locationResult.locations) {
-                    // Save to SQLite
-                    dbHelper.insertLocation(location.latitude, location.longitude)
-
-                    // Emit to RN
-                    val app = application as ReactApplication
-                    val context: ReactContext? =
-                        app.reactNativeHost.reactInstanceManager.currentReactContext
-
-                    val params: WritableMap = Arguments.createMap().apply {
-                        putDouble("latitude", location.latitude)
-                        putDouble("longitude", location.longitude)
-                        putDouble("accuracy", location.accuracy.toDouble())
-                        putDouble("timestamp", System.currentTimeMillis().toDouble())
-                    }
-
-                    context?.getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter::class.java)
-                        ?.emit("LocationUpdate", params)
-                }
-            }
-        }
-
+    private suspend fun getCurrentLocation(): Location? = suspendCancellableCoroutine { cont ->
         try {
-            fusedLocationClient.requestLocationUpdates(
-                locationRequest,
-                locationCallback!!,
-                mainLooper
-            )
-        } catch (e: SecurityException) {
+            fusedLocationClient.getCurrentLocation(Priority.PRIORITY_HIGH_ACCURACY, null)
+                .addOnSuccessListener { loc -> cont.resume(loc, null) }
+                .addOnFailureListener { _ -> cont.resume(null, null) }
+        } catch (e: Exception) {
+            cont.resume(null, null)
+        }
+    }
+
+    private fun distanceMeters(lat1: Double, lon1: Double, lat2: Double, lon2: Double): Float {
+        val res = FloatArray(1)
+        Location.distanceBetween(lat1, lon1, lat2, lon2, res)
+        return res[0]
+    }
+
+    private fun syncIfBatchReady() {
+        val unsynced = dbHelper.getUnsyncedBatch(5)
+        if (unsynced.size >= 5 && isOnline()) {
+            pushBatchToSupabase(unsynced)
+        }
+    }
+
+    private fun pushBatchToSupabase(batch: List<LocationDatabaseHelper.Row>) {
+        try {
+            val jsonArray = JSONArray()
+            for (row in batch) {
+                val obj = JSONObject()
+                obj.put("device_id", row.deviceId)
+                obj.put("lat", row.latitude)
+                obj.put("lng", row.longitude)
+                obj.put("created_at", java.time.Instant.ofEpochMilli(row.createdAtMs).toString())
+                jsonArray.put(obj)
+            }
+
+            val body = jsonArray.toString().toRequestBody("application/json".toMediaType())
+            val request = Request.Builder()
+                .url("$SUPABASE_URL/rest/v1/$SUPABASE_TABLE")
+                .addHeader("apikey", SUPABASE_KEY)
+                .addHeader("Authorization", "Bearer $SUPABASE_KEY")
+                .addHeader("Content-Type", "application/json")
+                .post(body)
+                .build()
+
+            val resp = client.newCall(request).execute()
+            if (resp.isSuccessful) {
+                dbHelper.markSynced(batch.map { it.id })
+            }
+            resp.close()
+        } catch (e: Exception) {
             e.printStackTrace()
         }
     }
 
-    override fun onDestroy() {
-        locationCallback?.let { fusedLocationClient.removeLocationUpdates(it) }
-        locationCallback = null
-        stopForeground(true)
-        stopSelf()
-        super.onDestroy()
+    private fun isOnline(): Boolean {
+        val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as android.net.ConnectivityManager
+        val net = cm.activeNetworkInfo
+        return net != null && net.isConnected
     }
-
-    override fun onBind(intent: Intent?): IBinder? = null
 }

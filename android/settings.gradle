@@ -4,6 +4,8 @@ applyNativeModulesSettingsGradle(settings)
 
 include ':app'
 includeBuild('../node_modules/@react-native/gradle-plugin')
+include ':react-native-config'
+project(':react-native-config').projectDir = new File(rootProject.projectDir, '../node_modules/react-native-config/android')
 
 // ✅ Disable codegen for react-native-android-location-enabler
 gradle.beforeProject { project ->
