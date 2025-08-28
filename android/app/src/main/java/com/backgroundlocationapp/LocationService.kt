@@ -22,8 +22,13 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
 import org.json.JSONObject
 import java.util.UUID
+import kotlin.coroutines.resume
 
 class LocationService : Service() {
+
+    companion object {
+        const val ACTION_LOCATION_UPDATE = "com.backgroundlocationapp.LOCATION_UPDATE"
+    }
 
     private lateinit var fusedLocationClient: FusedLocationProviderClient
     private lateinit var dbHelper: LocationDatabaseHelper
@@ -37,7 +42,7 @@ class LocationService : Service() {
     private val SUPABASE_KEY =
         "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImV6Y2l2b2llcGV5cmZheWtxa2ZsIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc0NDQ3MTA0MywiZXhwIjoyMDYwMDQ3MDQzfQ.bmMal1PS6dpGSfr2QNdJI5Waqehl5UwJRtLLMTzmx-0"
 
-    // Use a stable device ID instead of random UUID each boot
+    // Stable device ID
     private val deviceId: String by lazy {
         Settings.Secure.getString(contentResolver, Settings.Secure.ANDROID_ID)
             ?: UUID.randomUUID().toString()
@@ -56,8 +61,9 @@ class LocationService : Service() {
     }
 
     override fun onDestroy() {
-        super.onDestroy()
         trackingJob?.cancel()
+        stopForeground(STOP_FOREGROUND_DETACH)
+        super.onDestroy()
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -72,22 +78,32 @@ class LocationService : Service() {
             manager.createNotificationChannel(channel)
         }
 
+        // Use app icon to avoid "Invalid resource ID 0x00000000" on some devices
+        val smallIconRes = applicationInfo.icon
+
         val notification: Notification = NotificationCompat.Builder(this, channelId)
             .setContentTitle("Tracking Location")
             .setContentText("Background location tracking active")
-            .setSmallIcon(android.R.drawable.ic_menu_mylocation)
+            .setSmallIcon(smallIconRes)
+            .setOngoing(true)
             .build()
 
         startForeground(1, notification)
     }
 
     private fun startTrackingLoop() {
+        if (trackingJob?.isActive == true) return
+
         trackingJob = CoroutineScope(Dispatchers.IO).launch {
-            var lastSaved: LocationDatabaseHelper.LastLoc? = null
+            // Resume from last DB location if present
+            var lastSaved: LocationDatabaseHelper.LastLoc? = dbHelper.getLastLocation()
 
             while (isActive) {
                 val loc = getCurrentLocation()
                 if (loc != null) {
+                    // always emit "current" to JS
+                    emitCurrentToJs(loc)
+
                     if (lastSaved == null) {
                         // First fix → always save
                         dbHelper.insertLocation(
@@ -128,11 +144,12 @@ class LocationService : Service() {
 
     private suspend fun getCurrentLocation(): Location? = suspendCancellableCoroutine { cont ->
         try {
-            fusedLocationClient.getCurrentLocation(Priority.PRIORITY_HIGH_ACCURACY, null)
-                .addOnSuccessListener { loc -> cont.resume(loc, null) }
-                .addOnFailureListener { _ -> cont.resume(null, null) }
-        } catch (e: Exception) {
-            cont.resume(null, null)
+            fusedLocationClient
+                .getCurrentLocation(Priority.PRIORITY_HIGH_ACCURACY, null)
+                .addOnSuccessListener { loc -> cont.resume(loc) }
+                .addOnFailureListener { _ -> cont.resume(null) }
+        } catch (_: Exception) {
+            cont.resume(null)
         }
     }
 
@@ -167,6 +184,7 @@ class LocationService : Service() {
                 .addHeader("apikey", SUPABASE_KEY)
                 .addHeader("Authorization", "Bearer $SUPABASE_KEY")
                 .addHeader("Content-Type", "application/json")
+                .addHeader("Prefer", "resolution=merge-duplicates") // safe default
                 .post(body)
                 .build()
 
@@ -184,5 +202,15 @@ class LocationService : Service() {
         val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as android.net.ConnectivityManager
         val net = cm.activeNetworkInfo
         return net != null && net.isConnected
+    }
+
+    /** Broadcast current fix to JS (module listens & re-emits as DeviceEventEmitter "LocationUpdate") */
+    private fun emitCurrentToJs(loc: Location) {
+        val intent = Intent(ACTION_LOCATION_UPDATE).apply {
+            putExtra("latitude", loc.latitude)
+            putExtra("longitude", loc.longitude)
+            putExtra("timestamp", System.currentTimeMillis().toDouble())
+        }
+        sendBroadcast(intent)
     }
 }

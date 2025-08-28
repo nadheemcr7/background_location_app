@@ -146,7 +146,6 @@ class LocationDatabaseHelper(context: Context) :
         return rows
     }
 
-    // ✅ NEW: used by BackgroundLocationModule
     fun getAllLocations(): List<Row> {
         val rows = mutableListOf<Row>()
         val db = readableDatabase

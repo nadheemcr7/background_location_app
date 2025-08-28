@@ -2,7 +2,6 @@ import { createClient } from '@supabase/supabase-js'
 import 'react-native-url-polyfill/auto'
 import Config from 'react-native-config'
 
-// Fallbacks in case env vars are missing
 const SUPABASE_URL = Config.SUPABASE_URL || ''
 const SUPABASE_ANON_KEY = Config.SUPABASE_ANON_KEY || ''
 

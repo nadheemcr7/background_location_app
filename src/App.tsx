@@ -253,7 +253,6 @@
 
 
 
-
 import React, {useState, useEffect, useCallback} from 'react';
 import {
   View,
@@ -281,7 +280,7 @@ type Row = {
   longitude: number;
   created_at: number; // epoch ms
   device_id: string;
-  user_id?: string | null; // optional for now
+  user_id?: string | null; // optional
 };
 
 const App = () => {
@@ -301,7 +300,7 @@ const App = () => {
     e => console.log('❌ DB Error', e),
   );
 
-  // Ensure table exists (matches Supabase schema closely)
+  // Ensure table exists (matches native table)
   useEffect(() => {
     db.transaction(tx => {
       tx.executeSql(
@@ -319,7 +318,35 @@ const App = () => {
     });
   }, []);
 
-  // Listen for native updates → refresh UI + try sync
+  // Listen for native "current" updates → refresh UI + try sync
+  const trySyncBatch = useCallback(async () => {
+    if (online !== true) return;
+    try {
+      const batch = await getUnsynced();
+      if (!batch.length) return;
+
+      const payload = batch.map(b => ({
+        user_id: b.user_id || null,
+        device_id: b.device_id || deviceId,
+        lat: b.latitude,
+        lng: b.longitude,
+        created_at: new Date(b.created_at).toISOString(),
+      }));
+
+      const { error } = await supabase.from('location_points').insert(payload);
+      if (error) {
+        console.log('❌ Supabase insert failed:', error.message);
+        return;
+      }
+
+      await markSynced(batch.map(b => b.id));
+      console.log(`✅ Synced ${batch.length} rows to Supabase`);
+      fetchLatest(); // refresh UI after sync
+    } catch (e) {
+      console.log('❌ Sync error:', e);
+    }
+  }, [online, deviceId]);
+
   useEffect(() => {
     const sub = DeviceEventEmitter.addListener('LocationUpdate', (loc: any) => {
       if (!loc?.latitude || !loc?.longitude) return;
@@ -406,35 +433,6 @@ const App = () => {
         );
       });
     });
-
-  const trySyncBatch = useCallback(async () => {
-    if (online !== true) return;
-    try {
-      const batch = await getUnsynced();
-      if (!batch.length) return;
-
-      // Map to Supabase payload
-      const payload = batch.map(b => ({
-        user_id: b.user_id || null,
-        device_id: b.device_id || deviceId,
-        lat: b.latitude,
-        lng: b.longitude,
-        created_at: new Date(b.created_at).toISOString(),
-      }));
-
-      const { error } = await supabase.from('location_points').insert(payload);
-      if (error) {
-        console.log('❌ Supabase insert failed:', error.message);
-        return;
-      }
-
-      await markSynced(batch.map(b => b.id));
-      console.log(`✅ Synced ${batch.length} rows to Supabase`);
-      fetchLatest(); // refresh UI after sync
-    } catch (e) {
-      console.log('❌ Sync error:', e);
-    }
-  }, [online, deviceId, fetchLatest]);
 
   // Permissions
   const requestLocationPermission = async (): Promise<boolean> => {
