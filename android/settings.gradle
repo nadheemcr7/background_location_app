@@ -1,4 +1,15 @@
 rootProject.name = 'BackgroundLocationApp'
-apply from: file("../node_modules/@react-native-community/cli-platform-android/native_modules.gradle"); applyNativeModulesSettingsGradle(settings)
+apply from: file("../node_modules/@react-native-community/cli-platform-android/native_modules.gradle"); 
+applyNativeModulesSettingsGradle(settings)
+
 include ':app'
 includeBuild('../node_modules/@react-native/gradle-plugin')
+
+// ✅ Disable codegen for react-native-android-location-enabler
+gradle.beforeProject { project ->
+    if (project.name == "react-native-android-location-enabler") {
+        project.afterEvaluate {
+            project.tasks.findByName("generateCodegenArtifactsFromSchema")?.enabled = false
+        }
+    }
+}
