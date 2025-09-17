@@ -10,6 +10,7 @@ import android.location.Location
 import android.os.Build
 import android.os.IBinder
 import android.provider.Settings
+import android.util.Log
 import androidx.core.app.NotificationCompat
 import com.google.android.gms.location.FusedLocationProviderClient
 import com.google.android.gms.location.LocationServices
@@ -23,10 +24,14 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.util.UUID
 import kotlin.coroutines.resume
+import com.facebook.react.ReactApplication
+import com.facebook.react.bridge.Arguments
+import com.facebook.react.modules.core.DeviceEventManagerModule
 
 class LocationService : Service() {
 
     companion object {
+        const val TAG = "LocationService"
         const val ACTION_LOCATION_UPDATE = "com.backgroundlocationapp.LOCATION_UPDATE"
     }
 
@@ -35,14 +40,13 @@ class LocationService : Service() {
     private var trackingJob: Job? = null
     private val client = OkHttpClient()
 
-    private val CHECK_INTERVAL_MS = 30_000L       // every 30 seconds
-    private val DISTANCE_THRESHOLD_METERS = 10.0  // 10 meters
+    private val CHECK_INTERVAL_MS = 30_000L
+    private val DISTANCE_THRESHOLD_METERS = 10.0
+    private val ACCURACY_THRESHOLD_METERS = 30.0
     private val SUPABASE_URL = "https://ezcivoiepeyrfaykqkfl.supabase.co"
     private val SUPABASE_TABLE = "location_points"
-    private val SUPABASE_KEY =
-        "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImV6Y2l2b2llcGV5cmZheWtxa2ZsIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc0NDQ3MTA0MywiZXhwIjoyMDYwMDQ3MDQzfQ.bmMal1PS6dpGSfr2QNdJI5Waqehl5UwJRtLLMTzmx-0"
+    private val SUPABASE_KEY = "YOUR_SUPABASE_KEY_HERE"
 
-    // Stable device ID
     private val deviceId: String by lazy {
         Settings.Secure.getString(contentResolver, Settings.Secure.ANDROID_ID)
             ?: UUID.randomUUID().toString()
@@ -53,6 +57,7 @@ class LocationService : Service() {
         fusedLocationClient = LocationServices.getFusedLocationProviderClient(this)
         dbHelper = LocationDatabaseHelper(this)
         startForegroundService()
+        Log.d(TAG, "Service created. Device ID: $deviceId")
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -78,7 +83,6 @@ class LocationService : Service() {
             manager.createNotificationChannel(channel)
         }
 
-        // Use app icon to avoid "Invalid resource ID 0x00000000" on some devices
         val smallIconRes = applicationInfo.icon
 
         val notification: Notification = NotificationCompat.Builder(this, channelId)
@@ -95,47 +99,33 @@ class LocationService : Service() {
         if (trackingJob?.isActive == true) return
 
         trackingJob = CoroutineScope(Dispatchers.IO).launch {
-            // Resume from last DB location if present
             var lastSaved: LocationDatabaseHelper.LastLoc? = dbHelper.getLastLocation()
+            Log.d(TAG, "Tracking loop started. Last saved location: $lastSaved")
 
             while (isActive) {
                 val loc = getCurrentLocation()
                 if (loc != null) {
-                    // always emit "current" to JS
+                    // 🔹 Always log every location
+                    Log.d(TAG, "Current location: lat=${loc.latitude}, lng=${loc.longitude}, acc=${loc.accuracy}")
+
+                    // 🔹 Emit to RN UI always
                     emitCurrentToJs(loc)
 
+                    // 🔹 Only save if first location or moved enough
                     if (lastSaved == null) {
-                        // First fix → always save
-                        dbHelper.insertLocation(
-                            loc.latitude,
-                            loc.longitude,
-                            System.currentTimeMillis(),
-                            deviceId
-                        )
-                        lastSaved = LocationDatabaseHelper.LastLoc(
-                            loc.latitude, loc.longitude, System.currentTimeMillis()
-                        )
+                        dbHelper.insertLocation(loc.latitude, loc.longitude, System.currentTimeMillis(), deviceId)
+                        lastSaved = LocationDatabaseHelper.LastLoc(loc.latitude, loc.longitude, System.currentTimeMillis())
+                        Log.d(TAG, "First location saved to DB")
+                        syncIfBatchReady()
                     } else {
-                        val dist = distanceMeters(
-                            lastSaved.latitude,
-                            lastSaved.longitude,
-                            loc.latitude,
-                            loc.longitude
-                        )
+                        val dist = distanceMeters(lastSaved.latitude, lastSaved.longitude, loc.latitude, loc.longitude)
                         if (dist > DISTANCE_THRESHOLD_METERS) {
-                            dbHelper.insertLocation(
-                                loc.latitude,
-                                loc.longitude,
-                                System.currentTimeMillis(),
-                                deviceId
-                            )
-                            lastSaved = LocationDatabaseHelper.LastLoc(
-                                loc.latitude, loc.longitude, System.currentTimeMillis()
-                            )
+                            dbHelper.insertLocation(loc.latitude, loc.longitude, System.currentTimeMillis(), deviceId)
+                            lastSaved = LocationDatabaseHelper.LastLoc(loc.latitude, loc.longitude, System.currentTimeMillis())
+                            Log.d(TAG, "Location saved to DB. Distance moved: $dist meters")
+                            syncIfBatchReady()
                         }
                     }
-                    // Try sync if batch ready
-                    syncIfBatchReady()
                 }
                 delay(CHECK_INTERVAL_MS)
             }
@@ -147,8 +137,12 @@ class LocationService : Service() {
             fusedLocationClient
                 .getCurrentLocation(Priority.PRIORITY_HIGH_ACCURACY, null)
                 .addOnSuccessListener { loc -> cont.resume(loc) }
-                .addOnFailureListener { _ -> cont.resume(null) }
-        } catch (_: Exception) {
+                .addOnFailureListener { e ->
+                    Log.e(TAG, "Failed to get location", e)
+                    cont.resume(null)
+                }
+        } catch (e: Exception) {
+            Log.e(TAG, "Exception in getCurrentLocation", e)
             cont.resume(null)
         }
     }
@@ -184,17 +178,16 @@ class LocationService : Service() {
                 .addHeader("apikey", SUPABASE_KEY)
                 .addHeader("Authorization", "Bearer $SUPABASE_KEY")
                 .addHeader("Content-Type", "application/json")
-                .addHeader("Prefer", "resolution=merge-duplicates") // safe default
+                .addHeader("Prefer", "resolution=merge-duplicates")
                 .post(body)
                 .build()
 
             val resp = client.newCall(request).execute()
-            if (resp.isSuccessful) {
-                dbHelper.markSynced(batch.map { it.id })
-            }
+            if (resp.isSuccessful) dbHelper.markSynced(batch.map { it.id })
             resp.close()
+            Log.d(TAG, "Batch synced to Supabase: size=${batch.size}")
         } catch (e: Exception) {
-            e.printStackTrace()
+            Log.e(TAG, "Error syncing batch", e)
         }
     }
 
@@ -204,13 +197,26 @@ class LocationService : Service() {
         return net != null && net.isConnected
     }
 
-    /** Broadcast current fix to JS (module listens & re-emits as DeviceEventEmitter "LocationUpdate") */
     private fun emitCurrentToJs(loc: Location) {
-        val intent = Intent(ACTION_LOCATION_UPDATE).apply {
-            putExtra("latitude", loc.latitude)
-            putExtra("longitude", loc.longitude)
-            putExtra("timestamp", System.currentTimeMillis().toDouble())
+        try {
+            val reactApp = applicationContext as ReactApplication
+            val reactContext = reactApp.reactNativeHost.reactInstanceManager.currentReactContext
+
+            if (reactContext != null) {
+                val params = Arguments.createMap().apply {
+                    putDouble("latitude", loc.latitude)
+                    putDouble("longitude", loc.longitude)
+                    putDouble("timestamp", System.currentTimeMillis().toDouble())
+                }
+
+                reactContext
+                    .getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter::class.java)
+                    .emit("LocationUpdate", params)
+            } else {
+                Log.w(TAG, "ReactContext not ready yet, skipping emit")
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to emit location to RN", e)
         }
-        sendBroadcast(intent)
     }
 }
